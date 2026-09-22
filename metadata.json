@@ -1,0 +1,6 @@
+{
+  "name": "T1 ESPORTS",
+  "description": "Professional gaming utility for Free Fire sensitivity generation, character skill combinations, and UID inspector.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
