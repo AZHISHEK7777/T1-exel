@@ -1,12 +1,17 @@
 package com.example
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -24,13 +29,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.MainViewModel
 import com.example.ui.components.SideGameMonitorDrawer
 import com.example.ui.components.T1BottomNav
 import com.example.ui.components.T1TopBar
+import com.example.data.call.LocalCallStatus
+import com.example.data.call.SquadCallNotificationHelper
 import com.example.ui.dialogs.AdminPanelDialog
 import com.example.ui.dialogs.BackendConfigDialog
+import com.example.ui.dialogs.CallPermissionsDialog
+import com.example.ui.dialogs.GroupCallRoomDialog
+import com.example.ui.dialogs.IncomingCallNotificationBanner
 import com.example.ui.dialogs.LauncherDialog
 import com.example.ui.dialogs.OverlayPermissionDialog
 import com.example.ui.dialogs.SettingsDialog
@@ -43,20 +54,38 @@ import com.example.ui.theme.CyberBlack
 import com.example.ui.theme.MyApplicationTheme
 
 class MainActivity : ComponentActivity() {
+    private var pendingNotificationAction: String? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        SquadCallNotificationHelper.createNotificationChannels(this)
+        pendingNotificationAction = intent?.action
+
         setContent {
             MyApplicationTheme {
-                T1EsportsApp()
+                T1EsportsApp(
+                    initialAction = pendingNotificationAction,
+                    onClearAction = { pendingNotificationAction = null }
+                )
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        intent.action?.let { action ->
+            pendingNotificationAction = action
         }
     }
 }
 
 @Composable
 fun T1EsportsApp(
-    viewModel: MainViewModel = viewModel()
+    viewModel: MainViewModel = viewModel(),
+    initialAction: String? = null,
+    onClearAction: () -> Unit = {}
 ) {
     val isAuthenticated by viewModel.isAuthenticated.collectAsState()
     val isAdminPanelOpen by viewModel.isAdminPanelOpen.collectAsState()
@@ -84,10 +113,85 @@ fun T1EsportsApp(
     val toastMessage by viewModel.toastMessage.collectAsState()
     val chatMessages by viewModel.chatMessages.collectAsState()
 
+    val callRoom by viewModel.callRoom.collectAsState()
+    val callStatus by viewModel.callStatus.collectAsState()
+    val isCallMicMuted by viewModel.isCallMicMuted.collectAsState()
+    val isCallSpeakerOn by viewModel.isCallSpeakerOn.collectAsState()
+    val agoraStatus by viewModel.agoraStatus.collectAsState()
+    val agoraStatusMessage by viewModel.agoraStatusMessage.collectAsState()
+
     val context = LocalContext.current
     var showSettingsDialog by remember { mutableStateOf(false) }
+    var showAgoraConfigDialog by remember { mutableStateOf(false) }
     var showOverlayPermissionDialog by remember { mutableStateOf(false) }
+    var showPermissionsDialog by remember { mutableStateOf(false) }
     var isSideCpuMonitorOpen by remember { mutableStateOf(false) }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        val recordAudioGranted = results[Manifest.permission.RECORD_AUDIO] == true
+        if (recordAudioGranted) {
+            viewModel.showToast("Voice Microphone Access Granted!")
+        }
+    }
+
+    val checkAndRequestPermissions = {
+        val permissionsToRequest = mutableListOf<String>()
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            permissionsToRequest.add(Manifest.permission.RECORD_AUDIO)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+        if (permissionsToRequest.isNotEmpty()) {
+            permissionLauncher.launch(permissionsToRequest.toTypedArray())
+        }
+    }
+
+    // Auto prompt permissions on launch if needed
+    LaunchedEffect(Unit) {
+        val hasMic = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        if (!hasMic) {
+            showPermissionsDialog = true
+        }
+    }
+
+    // Handle initial / incoming notification action
+    LaunchedEffect(initialAction) {
+        when (initialAction) {
+            SquadCallNotificationHelper.ACTION_ACCEPT_CALL -> {
+                viewModel.joinGroupCall()
+                onClearAction()
+            }
+            SquadCallNotificationHelper.ACTION_DECLINE_CALL -> {
+                viewModel.declineIncomingCall()
+                onClearAction()
+            }
+            SquadCallNotificationHelper.ACTION_LEAVE_CALL -> {
+                viewModel.leaveGroupCall()
+                onClearAction()
+            }
+        }
+    }
+
+    val handleStartCallWithPermission = {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            showPermissionsDialog = true
+        } else {
+            viewModel.startGroupCall()
+        }
+    }
+
+    val handleJoinCallWithPermission = {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            showPermissionsDialog = true
+        } else {
+            viewModel.joinGroupCall()
+        }
+    }
 
     val handleLaunchGameTrigger = {
         if (Settings.canDrawOverlays(context)) {
@@ -128,11 +232,30 @@ fun T1EsportsApp(
                 showSettingsDialog = false
                 viewModel.openBackendConfigDialog(true)
             },
+            onOpenAgoraConfig = {
+                showSettingsDialog = false
+                showAgoraConfigDialog = true
+            },
             onLogout = {
                 showSettingsDialog = false
                 viewModel.logout()
             },
             onDismiss = { showSettingsDialog = false }
+        )
+    }
+
+    // Agora Voice Engine Configuration Dialog
+    if (showAgoraConfigDialog) {
+        com.example.ui.dialogs.AgoraConfigDialog(
+            savedAppId = viewModel.getAgoraAppId(),
+            savedToken = viewModel.getAgoraToken(),
+            savedChannel = viewModel.getAgoraChannel(),
+            currentStatus = agoraStatusMessage,
+            onSave = { appId, token, channel ->
+                showAgoraConfigDialog = false
+                viewModel.saveAgoraConfig(appId, token, channel)
+            },
+            onDismiss = { showAgoraConfigDialog = false }
         )
     }
 
@@ -186,6 +309,49 @@ fun T1EsportsApp(
                 showOverlayPermissionDialog = false
                 isSideCpuMonitorOpen = true
             }
+        )
+    }
+
+    // Call Permissions Dialog (Microphone & Ring Notifications)
+    if (showPermissionsDialog) {
+        CallPermissionsDialog(
+            onRequestPermissions = {
+                showPermissionsDialog = false
+                checkAndRequestPermissions()
+            },
+            onDismiss = { showPermissionsDialog = false }
+        )
+    }
+
+    // Active Group Call Room Screen / Dialog
+    if (callStatus == LocalCallStatus.CONNECTED) {
+        GroupCallRoomDialog(
+            room = callRoom,
+            currentUserName = viewModel.getUserName(),
+            isMicMuted = isCallMicMuted,
+            isSpeakerOn = isCallSpeakerOn,
+            onToggleMic = { viewModel.toggleCallMic() },
+            onToggleSpeaker = { viewModel.toggleCallSpeaker() },
+            onLeaveCall = { viewModel.leaveGroupCall() },
+            onDialPhone = { number -> viewModel.dialPhoneNumber(number) },
+            onDismiss = { viewModel.leaveGroupCall() },
+            agoraStatus = agoraStatus,
+            agoraStatusMessage = agoraStatusMessage,
+            savedAgoraAppId = viewModel.getAgoraAppId(),
+            savedAgoraToken = viewModel.getAgoraToken(),
+            savedAgoraChannel = viewModel.getAgoraChannel(),
+            onSaveAgoraConfig = { appId, token, channel ->
+                viewModel.saveAgoraConfig(appId, token, channel)
+            }
+        )
+    }
+
+    // Floating Incoming Group Call Banner (Instagram style)
+    if (callStatus == LocalCallStatus.INCOMING) {
+        IncomingCallNotificationBanner(
+            callerName = callRoom?.callerName ?: "Squad Mate",
+            onAccept = handleJoinCallWithPermission,
+            onDecline = { viewModel.declineIncomingCall() }
         )
     }
 
@@ -286,6 +452,9 @@ fun T1EsportsApp(
                     3 -> GlobalChatScreen(
                         userName = viewModel.getUserName(),
                         messages = chatMessages,
+                        callRoom = callRoom,
+                        onStartCall = handleStartCallWithPermission,
+                        onJoinCall = handleJoinCallWithPermission,
                         onSendMessage = { text, uri, type ->
                             viewModel.sendChatMessage(text, uri, type)
                         }

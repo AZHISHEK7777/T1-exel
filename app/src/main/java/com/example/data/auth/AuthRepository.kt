@@ -57,14 +57,31 @@ class AuthRepository(private val context: Context) {
         private const val PREF_LAST_ADMIN_NOTIFICATION = "pref_last_admin_notification"
     }
 
+    private var isFirebaseAvailable: Boolean? = null
+
     private fun getFirestore(): FirebaseFirestore? {
+        if (isFirebaseAvailable == false) return null
         return try {
-            if (FirebaseApp.getApps(context).isEmpty()) {
-                FirebaseApp.initializeApp(context)
+            val resId = context.resources.getIdentifier("google_app_id", "string", context.packageName)
+            val apps = FirebaseApp.getApps(context)
+            if (resId == 0 && apps.isEmpty()) {
+                isFirebaseAvailable = false
+                return null
             }
-            FirebaseFirestore.getInstance()
-        } catch (e: Exception) {
-            Log.e("AuthRepository", "Firestore init error: ${e.message}")
+            val app = if (apps.isEmpty()) {
+                FirebaseApp.initializeApp(context)
+            } else {
+                apps[0]
+            }
+            if (app != null) {
+                isFirebaseAvailable = true
+                FirebaseFirestore.getInstance(app)
+            } else {
+                isFirebaseAvailable = false
+                null
+            }
+        } catch (_: Exception) {
+            isFirebaseAvailable = false
             null
         }
     }

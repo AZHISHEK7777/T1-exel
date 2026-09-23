@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.ExitToApp
@@ -42,6 +43,7 @@ import com.example.ui.theme.CyberBlack
 import com.example.ui.theme.CyberCyan
 import com.example.ui.theme.DarkBorder
 import com.example.ui.theme.DarkSurface
+import com.example.ui.theme.StatusGreen
 import com.example.ui.theme.StatusRed
 import com.example.ui.theme.T1Yellow
 import com.example.ui.theme.TextPrimary
@@ -51,6 +53,7 @@ import com.example.ui.theme.TextSecondary
 fun SettingsDialog(
     onOpenAdminPanel: () -> Unit = {},
     onOpenBackendConfig: () -> Unit,
+    onOpenAgoraConfig: () -> Unit = {},
     onLogout: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -151,6 +154,43 @@ fun SettingsDialog(
                             modifier = Modifier.height(36.dp)
                         ) {
                             Text("CONFIG", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                        }
+                    }
+                }
+
+                // Option: AGORA VOICE ENGINE
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(DarkSurface)
+                        .border(0.5.dp, DarkBorder, RoundedCornerShape(12.dp))
+                        .padding(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Bolt, contentDescription = null, tint = StatusGreen, modifier = Modifier.size(22.dp))
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text("AGORA VOICE ENGINE", style = MaterialTheme.typography.bodyMedium.copy(color = TextPrimary, fontWeight = FontWeight.Bold))
+                                Text("Real-time squad voice & App ID", style = MaterialTheme.typography.labelSmall.copy(color = TextSecondary, fontSize = 10.sp))
+                            }
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                onDismiss()
+                                onOpenAgoraConfig()
+                            },
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = StatusGreen),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.height(36.dp)
+                        ) {
+                            Text("SETUP", fontWeight = FontWeight.Bold, fontSize = 11.sp)
                         }
                     }
                 }

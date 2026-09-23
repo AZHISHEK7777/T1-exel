@@ -34,53 +34,60 @@ class GlobalChatRepository(private val context: Context) {
 
     init {
         scope.launch {
-            // Seed default community messages if empty
-            val existing = chatDao.getAllMessages().first()
-            if (existing.isEmpty()) {
-                val now = System.currentTimeMillis()
-                val seed = listOf(
-                    ChatMessageEntity(
-                        id = UUID.randomUUID().toString(),
-                        senderName = "Abhishek (Developer)",
-                        senderRole = "ADMIN",
-                        messageText = "Welcome to T1 Esports Community Hub! This is our official Free Fire squad chat. Share your drag sensitivities, loadouts and room codes here.",
-                        timestamp = now - 180_000,
-                        isFromMe = false
-                    ),
-                    ChatMessageEntity(
-                        id = UUID.randomUUID().toString(),
-                        senderName = "Rahul_Pro",
-                        senderRole = "VIP",
-                        messageText = "The Tatsuya + Maro + Hayato combination from the Skills tab is totally broken in CS Ranked! Straight headshots with SMG.",
-                        timestamp = now - 120_000,
-                        isFromMe = false
-                    ),
-                    ChatMessageEntity(
-                        id = UUID.randomUUID().toString(),
-                        senderName = "Viper_ES",
-                        senderRole = "PRO",
-                        messageText = "Anyone up for custom 1v1 room? I have 2 room cards ready.",
-                        timestamp = now - 60_000,
-                        isFromMe = false
-                    )
-                )
-                chatDao.insertMessages(seed)
+            // Purge any fake messages from local database
+            try {
+                chatDao.deleteFakeMessages()
+            } catch (e: Exception) {
+                Log.w("GlobalChatRepository", "Could not delete local fake messages: ${e.message}")
             }
+
+            // Purge fake messages from Firestore if present
+            try {
+                val fs = getFirestoreInstance()
+                fs?.collection("global_chat")
+                    ?.whereIn("senderName", listOf("Abhishek (Developer)", "Rahul_Pro", "Viper_ES"))
+                    ?.get()?.addOnSuccessListener { docs ->
+                        for (doc in docs) {
+                            doc.reference.delete()
+                        }
+                    }
+            } catch (_: Exception) {}
 
             // Initialize Firebase Firestore Live Realtime Cloud Sync
             setupFirestoreRealtimeSync()
         }
     }
 
+    private var isFirebaseAvailable: Boolean? = null
+
     private fun getFirestoreInstance(): FirebaseFirestore? {
         if (firestore != null) return firestore
+        if (isFirebaseAvailable == false) return null
+
         return try {
-            if (com.google.firebase.FirebaseApp.getApps(context).isEmpty()) {
-                com.google.firebase.FirebaseApp.initializeApp(context)
+            val resId = context.resources.getIdentifier("google_app_id", "string", context.packageName)
+            val apps = com.google.firebase.FirebaseApp.getApps(context)
+            if (resId == 0 && apps.isEmpty()) {
+                isFirebaseAvailable = false
+                return null
             }
-            FirebaseFirestore.getInstance().also { firestore = it }
-        } catch (e: Exception) {
-            Log.e("GlobalChatRepository", "Failed to get Firestore instance: ${e.message}")
+
+            val app = if (apps.isEmpty()) {
+                com.google.firebase.FirebaseApp.initializeApp(context)
+            } else {
+                apps[0]
+            }
+            if (app != null) {
+                FirebaseFirestore.getInstance(app).also {
+                    firestore = it
+                    isFirebaseAvailable = true
+                }
+            } else {
+                isFirebaseAvailable = false
+                null
+            }
+        } catch (_: Exception) {
+            isFirebaseAvailable = false
             null
         }
     }
@@ -89,11 +96,9 @@ class GlobalChatRepository(private val context: Context) {
         try {
             val fs = getFirestoreInstance()
             if (fs == null) {
-                Log.w("GlobalChatRepository", "Firestore instance is null, retrying in 2 seconds...")
-                scope.launch {
-                    kotlinx.coroutines.delay(2000)
-                    setupFirestoreRealtimeSync()
-                }
+                // Firebase is not configured or google-services.json is absent;
+                // do not retry in a loop. Local Room storage is fully active.
+                Log.i("GlobalChatRepository", "Cloud sync inactive; local offline mode enabled.")
                 return
             }
 
@@ -112,21 +117,34 @@ class GlobalChatRepository(private val context: Context) {
                                 val d = doc.document
                                 val docId = d.getString("id") ?: d.id
                                 val senderName = d.getString("senderName") ?: "Player"
+                                // Ignore any leftover fake messages
+                                if (senderName in listOf("Abhishek (Developer)", "Rahul_Pro", "Viper_ES")) {
+                                    continue
+                                }
                                 val senderRole = d.getString("senderRole") ?: "VIP"
                                 val messageText = d.getString("messageText") ?: ""
-                                val attachmentUri = d.getString("attachmentUri")
+                                val rawAttachmentUri = d.getString("attachmentUri")
                                 val attachmentType = d.getString("attachmentType") ?: "NONE"
                                 val timestamp = d.getLong("timestamp") ?: System.currentTimeMillis()
                                 val senderDeviceId = d.getString("senderDeviceId") ?: ""
 
                                 val isFromMe = (senderDeviceId == deviceId)
 
+                                // If this is an image from cloud (base64 data URL), cache to local file for zero-lag display
+                                val finalAttachmentUri = if (!rawAttachmentUri.isNullOrBlank() && rawAttachmentUri.startsWith("data:image/")) {
+                                    ChatImageHelper.saveBase64ToCache(context, docId, rawAttachmentUri)
+                                } else if (!rawAttachmentUri.isNullOrBlank()) {
+                                    rawAttachmentUri
+                                } else {
+                                    null
+                                }
+
                                 val messageEntity = ChatMessageEntity(
                                     id = docId,
                                     senderName = senderName,
                                     senderRole = senderRole,
                                     messageText = messageText,
-                                    attachmentUri = if (attachmentUri.isNullOrBlank()) null else attachmentUri,
+                                    attachmentUri = finalAttachmentUri,
                                     attachmentType = attachmentType,
                                     timestamp = timestamp,
                                     isFromMe = isFromMe
@@ -164,12 +182,30 @@ class GlobalChatRepository(private val context: Context) {
             senderRole == "PRO" -> "PRO"
             else -> "BASIC"
         }
+
+        var localAttachmentUri = attachmentUri
+        var cloudAttachmentUri = attachmentUri ?: ""
+
+        // If user is sending a photo, compress and prepare Base64 data URL for cross-phone delivery
+        if (attachmentType == "IMAGE" && !attachmentUri.isNullOrBlank()) {
+            try {
+                val parsedUri = android.net.Uri.parse(attachmentUri)
+                val processed = ChatImageHelper.processAndCompressImage(context, parsedUri)
+                if (processed != null) {
+                    localAttachmentUri = processed.localFilePath
+                    cloudAttachmentUri = processed.dataUrl
+                }
+            } catch (e: Exception) {
+                Log.e("GlobalChatRepository", "Failed to compress outbound image: ${e.message}", e)
+            }
+        }
+
         val message = ChatMessageEntity(
             id = UUID.randomUUID().toString(),
             senderName = senderName.ifBlank { "Pro Player" },
             senderRole = userRole,
             messageText = trimmedMsg,
-            attachmentUri = attachmentUri,
+            attachmentUri = localAttachmentUri,
             attachmentType = attachmentType,
             timestamp = System.currentTimeMillis(),
             isFromMe = true
@@ -183,7 +219,7 @@ class GlobalChatRepository(private val context: Context) {
                 "senderName" to message.senderName,
                 "senderRole" to message.senderRole,
                 "messageText" to message.messageText,
-                "attachmentUri" to (message.attachmentUri ?: ""),
+                "attachmentUri" to cloudAttachmentUri,
                 "attachmentType" to message.attachmentType,
                 "timestamp" to message.timestamp,
                 "senderDeviceId" to deviceId

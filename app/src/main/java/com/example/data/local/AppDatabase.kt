@@ -64,6 +64,9 @@ interface ChatDao {
 
     @Query("DELETE FROM global_chat_messages")
     suspend fun clearMessages()
+
+    @Query("DELETE FROM global_chat_messages WHERE senderName IN ('Abhishek (Developer)', 'Rahul_Pro', 'Viper_ES') OR messageText LIKE '%Welcome to T1 Esports Community Hub%' OR messageText LIKE '%Tatsuya + Maro + Hayato%' OR messageText LIKE '%Anyone up for custom 1v1 room%'")
+    suspend fun deleteFakeMessages()
 }
 
 @Database(entities = [SavedSensitivityEntity::class, ChatMessageEntity::class], version = 2, exportSchema = false)

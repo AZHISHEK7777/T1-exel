@@ -47,18 +47,35 @@ class AdminViewModel(
 ) : AndroidViewModel(application) {
 
     companion object {
-        const val KEYS_COLLECTION = "keys"
+        const val KEYS_COLLECTION = "access_keys"
     }
 
+    private var isFirebaseAvailable: Boolean? = null
+
     private fun getFirestore(): FirebaseFirestore? {
+        if (isFirebaseAvailable == false) return null
         return try {
             val context = getApplication<Application>().applicationContext
-            if (FirebaseApp.getApps(context).isEmpty()) {
-                FirebaseApp.initializeApp(context)
+            val resId = context.resources.getIdentifier("google_app_id", "string", context.packageName)
+            val apps = FirebaseApp.getApps(context)
+            if (resId == 0 && apps.isEmpty()) {
+                isFirebaseAvailable = false
+                return null
             }
-            FirebaseFirestore.getInstance()
-        } catch (e: Exception) {
-            Log.e("AdminViewModel", "Firestore initialization error: ${e.message}")
+            val app = if (apps.isEmpty()) {
+                FirebaseApp.initializeApp(context)
+            } else {
+                apps[0]
+            }
+            if (app != null) {
+                isFirebaseAvailable = true
+                FirebaseFirestore.getInstance(app)
+            } else {
+                isFirebaseAvailable = false
+                null
+            }
+        } catch (_: Exception) {
+            isFirebaseAvailable = false
             null
         }
     }
@@ -217,30 +234,19 @@ class AdminViewModel(
                 val fs = getFirestore()
                 if (fs != null) {
                     val keyData = hashMapOf(
+                        "key" to firestoreKey.value,
                         "value" to firestoreKey.value,
                         "type" to firestoreKey.type,
+                        "tier" to keyTier.name,
                         "isUsed" to firestoreKey.isUsed,
+                        "isRevoked" to false,
                         "label" to firestoreKey.label,
                         "createdAt" to firestoreKey.createdAt,
                         "usedBy" to firestoreKey.usedBy,
+                        "usedAt" to "",
                         "pin" to firestoreKey.pin
                     )
                     fs.collection(KEYS_COLLECTION).document(firestoreKey.value).set(keyData)
-
-                    // Also store duplicate in legacy 'access_keys' for backwards compatibility
-                    fs.collection("access_keys").document(firestoreKey.value).set(
-                        hashMapOf(
-                            "key" to firestoreKey.value,
-                            "label" to firestoreKey.label,
-                            "tier" to keyTier.name,
-                            "isUsed" to false,
-                            "isRevoked" to false,
-                            "createdAt" to firestoreKey.createdAt,
-                            "usedBy" to "",
-                            "usedAt" to "",
-                            "pin" to ""
-                        )
-                    )
                 }
             } catch (e: Exception) {
                 Log.e("AdminViewModel", "Failed to push key to Firestore: ${e.message}")

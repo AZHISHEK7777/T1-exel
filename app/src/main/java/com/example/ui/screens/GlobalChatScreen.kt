@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -43,12 +44,18 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Verified
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -96,6 +103,9 @@ fun GlobalChatScreen(
     userName: String,
     messages: List<ChatMessageEntity>,
     onSendMessage: (text: String, attachmentUri: String?, attachmentType: String) -> Unit,
+    callRoom: com.example.data.call.SquadCallRoom? = null,
+    onStartCall: () -> Unit = {},
+    onJoinCall: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var inputText by remember { mutableStateOf("") }
@@ -219,20 +229,72 @@ fun GlobalChatScreen(
                     }
                 }
 
-                // Quick preset toggle button
-                IconButton(
-                    onClick = { showTacticalPresets = !showTacticalPresets },
-                    modifier = Modifier
-                        .size(34.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(if (showTacticalPresets) T1Yellow else DarkSurfaceElevated)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Star,
-                        contentDescription = "Tactical Quick Share",
-                        tint = if (showTacticalPresets) Color.Black else T1Yellow,
-                        modifier = Modifier.size(18.dp)
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val isCallActive = callRoom != null && (callRoom.status == "ACTIVE" || callRoom.status == "RINGING")
+                    if (isCallActive) {
+                        // Pulsing / Glowing Active Call Join Button
+                        Button(
+                            onClick = onJoinCall,
+                            colors = ButtonDefaults.buttonColors(containerColor = StatusGreen),
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier
+                                .height(34.dp)
+                                .testTag("join_live_call_header_btn")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Call,
+                                contentDescription = null,
+                                tint = Color.Black,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "CALL (${callRoom.participants.size})",
+                                color = Color.Black,
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 10.sp
+                                )
+                            )
+                        }
+                    } else {
+                        // Start Group Call Button
+                        IconButton(
+                            onClick = onStartCall,
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(DarkSurfaceElevated)
+                                .border(1.dp, CyberCyan.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                                .testTag("start_group_call_header_btn")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Call,
+                                contentDescription = "Group Voice Call",
+                                tint = CyberCyan,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(6.dp))
+
+                    // Quick preset toggle button
+                    IconButton(
+                        onClick = { showTacticalPresets = !showTacticalPresets },
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (showTacticalPresets) T1Yellow else DarkSurfaceElevated)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Star,
+                            contentDescription = "Tactical Quick Share",
+                            tint = if (showTacticalPresets) Color.Black else T1Yellow,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
         }
@@ -306,7 +368,8 @@ fun GlobalChatScreen(
             items(messages, key = { it.id }) { msg ->
                 ChatMessageItem(
                     message = msg,
-                    isCurrentUser = msg.isFromMe || msg.senderName.equals(userName, ignoreCase = true)
+                    isCurrentUser = msg.isFromMe || msg.senderName.equals(userName, ignoreCase = true),
+                    onJoinCall = onJoinCall
                 )
             }
         }
@@ -607,7 +670,8 @@ fun TierBadge(role: String) {
 @Composable
 private fun ChatMessageItem(
     message: ChatMessageEntity,
-    isCurrentUser: Boolean
+    isCurrentUser: Boolean,
+    onJoinCall: () -> Unit = {}
 ) {
     val timeFormatted = remember(message.timestamp) {
         SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(message.timestamp))
@@ -703,12 +767,16 @@ private fun ChatMessageItem(
                 Column {
                     // Attachment if any
                     if (message.attachmentUri != null) {
+                        val imageModel = remember(message.attachmentUri) {
+                            val u = message.attachmentUri
+                            if (u.startsWith("/")) java.io.File(u) else u
+                        }
                         AsyncImage(
-                            model = message.attachmentUri,
+                            model = imageModel,
                             contentDescription = "Shared image",
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(140.dp)
+                                .heightIn(min = 100.dp, max = 200.dp)
                                 .clip(RoundedCornerShape(8.dp))
                                 .border(0.5.dp, CyberCyan.copy(alpha = 0.5f), RoundedCornerShape(8.dp)),
                             contentScale = ContentScale.Crop
@@ -725,6 +793,70 @@ private fun ChatMessageItem(
                             lineHeight = 18.sp
                         )
                     )
+
+                    // Call Invitation Interactive Card
+                    if (message.attachmentType == "CALL_INVITE") {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFF0D1D16)),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, StatusGreen.copy(alpha = 0.8f)),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(30.dp)
+                                            .clip(CircleShape)
+                                            .background(StatusGreen),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Call,
+                                            contentDescription = null,
+                                            tint = Color.Black,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Column {
+                                        Text(
+                                            text = "SQUAD AUDIO ROOM",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                color = StatusGreen,
+                                                fontWeight = FontWeight.Black
+                                            )
+                                        )
+                                        Text(
+                                            text = "Tap button below to connect",
+                                            style = MaterialTheme.typography.bodySmall.copy(
+                                                color = TextSecondary,
+                                                fontSize = 10.sp
+                                            )
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Button(
+                                    onClick = onJoinCall,
+                                    colors = ButtonDefaults.buttonColors(containerColor = StatusGreen),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(32.dp),
+                                    contentPadding = PaddingValues(0.dp)
+                                ) {
+                                    Text(
+                                        text = "🟢 JOIN SQUAD CALL",
+                                        color = Color.Black,
+                                        fontWeight = FontWeight.Black,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
 
                     Spacer(modifier = Modifier.height(2.dp))
 

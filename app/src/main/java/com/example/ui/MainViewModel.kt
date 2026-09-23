@@ -47,6 +47,53 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val authRepository = com.example.data.auth.AuthRepository(context)
     val globalChatRepository = com.example.data.chat.GlobalChatRepository(context)
     val adminViewModel by lazy { AdminViewModel(application, authRepository) }
+    val groupCallManager = com.example.data.call.GroupCallManager(context)
+    val agoraEngine = groupCallManager.agoraEngine
+    val agoraStatus = agoraEngine.status
+    val agoraStatusMessage = agoraEngine.statusMessage
+
+    fun getAgoraAppId(): String = agoraEngine.getSavedAppId()
+    fun getAgoraToken(): String = agoraEngine.getSavedToken()
+    fun getAgoraChannel(): String = agoraEngine.getSavedChannel()
+    fun saveAgoraConfig(appId: String, token: String = "", channel: String = "") = 
+        agoraEngine.saveConfig(appId, token, channel)
+    fun saveAgoraAppId(appId: String) = agoraEngine.saveConfig(appId, agoraEngine.getSavedToken(), agoraEngine.getSavedChannel())
+
+    // Call state
+    val callRoom = groupCallManager.currentRoom
+    val callStatus = groupCallManager.localStatus
+    val isCallMicMuted = groupCallManager.isMicMuted
+    val isCallSpeakerOn = groupCallManager.isSpeakerOn
+
+    fun startGroupCall() {
+        val userName = getUserName()
+        groupCallManager.startGroupCall(userName)
+        sendChatMessage("📞 Squad Voice Call started by $userName! Tap Join to talk.", null, "CALL_INVITE")
+    }
+
+    fun joinGroupCall() {
+        groupCallManager.joinCall(getUserName())
+    }
+
+    fun declineIncomingCall() {
+        groupCallManager.declineIncomingCall()
+    }
+
+    fun leaveGroupCall() {
+        groupCallManager.leaveCall()
+    }
+
+    fun toggleCallMic() {
+        groupCallManager.toggleMic()
+    }
+
+    fun toggleCallSpeaker() {
+        groupCallManager.toggleSpeaker()
+    }
+
+    fun dialPhoneNumber(number: String) {
+        groupCallManager.dialPhoneNumber(number)
+    }
 
     // Device Info
     val deviceInfo: DeviceInfo = DeviceDetector.getDeviceInfo(context)
