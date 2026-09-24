@@ -259,21 +259,30 @@ fun GlobalChatScreen(
                             )
                         }
                     } else {
-                        // Start Group Call Button
-                        IconButton(
+                        // Start WhatsApp Voice Call Button (Direct Calling, Zero Setup)
+                        Button(
                             onClick = onStartCall,
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF25D366)),
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                             modifier = Modifier
-                                .size(34.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(DarkSurfaceElevated)
-                                .border(1.dp, CyberCyan.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                                .height(34.dp)
                                 .testTag("start_group_call_header_btn")
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Call,
-                                contentDescription = "Group Voice Call",
-                                tint = CyberCyan,
-                                modifier = Modifier.size(18.dp)
+                                contentDescription = "Voice Call",
+                                tint = Color.Black,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "CALL",
+                                color = Color.Black,
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 11.sp
+                                )
                             )
                         }
                     }

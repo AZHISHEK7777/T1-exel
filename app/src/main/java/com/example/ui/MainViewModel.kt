@@ -140,7 +140,163 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // PIN Setup State for new key activations
+    fun clearAllChat(onComplete: ((Boolean) -> Unit)? = null) {
+        viewModelScope.launch {
+            val success = globalChatRepository.clearAllChat()
+            if (success) {
+                showToast("🧹 All community chat messages cleared!")
+            } else {
+                showToast("⚠️ Chat cleared locally.")
+            }
+            onComplete?.invoke(success)
+        }
+    }
+
+    // Validated Key state waiting for Google or Guest login selection
+    private val _validatedKeyInfo = MutableStateFlow<com.example.data.auth.KeyValidationResult.KeyVerified?>(null)
+    val validatedKeyInfo: StateFlow<com.example.data.auth.KeyValidationResult.KeyVerified?> = _validatedKeyInfo.asStateFlow()
+
+    fun clearValidatedKeyInfo() {
+        _validatedKeyInfo.value = null
+    }
+
+    /**
+     * Step 1: Verify Key
+     * - If Admin Passcode ("111" or "ABHISHEK-ADMIN-999" or ADMIN tier):
+     *   Directly logs into ADMIN PANEL instantly! Does not enter normal app.
+     * - If normal key: Sets validatedKeyInfo for Google or Guest login.
+     */
+    fun submitKey(key: String) {
+        val trimmedKey = key.trim()
+        if (trimmedKey.isBlank()) {
+            _authErrorMessage.value = "Please enter an Access Key."
+            return
+        }
+
+        when (val result = authRepository.validateKeyOnly(trimmedKey)) {
+            is com.example.data.auth.KeyValidationResult.AdminInstantLogin -> {
+                _authErrorMessage.value = null
+                _validatedKeyInfo.value = null
+                loginDirectToAdminPanel()
+            }
+            is com.example.data.auth.KeyValidationResult.KeyVerified -> {
+                _authErrorMessage.value = null
+                _validatedKeyInfo.value = result
+            }
+            is com.example.data.auth.KeyValidationResult.Error -> {
+                _authErrorMessage.value = result.message
+            }
+            else -> {}
+        }
+    }
+
+    /**
+     * Instant Admin Login via 111:
+     * Directly opens the Admin Panel Dialog without entering normal app!
+     */
+    fun loginDirectToAdminPanel() {
+        authRepository.setLoggedIn(
+            com.example.data.auth.AuthRepository.MASTER_KEY,
+            "Abhishek (Admin)",
+            com.example.data.auth.KeyTier.ADMIN,
+            "1111"
+        )
+        _isAuthenticated.value = true
+        _isAdminPanelOpen.value = true
+        _authErrorMessage.value = null
+        _validatedKeyInfo.value = null
+        showToast("👑 Admin 111 Verified — Opened Admin Panel!")
+    }
+
+    /**
+     * Direct Google Sign In from the Main Key Screen:
+     * - If this Google account (email) is already registered -> Instant Login!
+     * - If NOT registered -> Shows error: "User not registered! Please enter a valid VIP Key."
+     */
+    fun directGoogleLogin(email: String) {
+        val cleanEmail = email.trim().lowercase(java.util.Locale.ROOT)
+        if (cleanEmail.isBlank()) {
+            _authErrorMessage.value = "No Google account selected."
+            return
+        }
+
+        val registered = authRepository.getRegisteredGoogleUser(cleanEmail)
+        if (registered != null) {
+            authRepository.loginRegisteredGoogleUser(cleanEmail)
+            _authErrorMessage.value = null
+            _validatedKeyInfo.value = null
+            _isAuthenticated.value = true
+            showToast("Welcome back, ${registered.username}!")
+        } else {
+            _authErrorMessage.value = "User not registered! Please enter a valid VIP Key to register first."
+            showToast("User not registered! Please enter a VIP Key first.")
+        }
+    }
+
+    /**
+     * Register new Google User with Key & Username:
+     * Saves Gmail, chosen username, key & tier.
+     * Redirects directly into app!
+     */
+    fun registerWithGoogle(email: String, username: String, key: String, tier: com.example.data.auth.KeyTier) {
+        val cleanEmail = email.trim().lowercase(java.util.Locale.ROOT)
+        val cleanUser = username.trim().ifBlank { cleanEmail.substringBefore("@").ifBlank { "Pro Player" } }
+
+        authRepository.registerGoogleUser(
+            email = cleanEmail,
+            username = cleanUser,
+            key = key,
+            tier = tier
+        )
+        _validatedKeyInfo.value = null
+        _authErrorMessage.value = null
+        _isAuthenticated.value = true
+        showToast("Registration Complete! Welcome, $cleanUser!")
+    }
+
+    /**
+     * Step 2A: Complete login with Google
+     */
+    fun loginWithGoogle(key: String, userName: String, tier: com.example.data.auth.KeyTier) {
+        val cleanName = userName.trim().ifBlank { "Google User" }
+        val success = authRepository.activateKey(
+            key = key,
+            userName = cleanName,
+            tier = tier,
+            loginMethod = "Google"
+        )
+        if (success) {
+            _validatedKeyInfo.value = null
+            _authErrorMessage.value = null
+            _isAuthenticated.value = true
+            showToast("Logged in with Google: $cleanName")
+        } else {
+            _authErrorMessage.value = "Failed to activate key with Google account."
+        }
+    }
+
+    /**
+     * Step 2B: Complete login as Guest
+     */
+    fun loginAsGuest(key: String, guestName: String, tier: com.example.data.auth.KeyTier) {
+        val cleanName = guestName.trim().ifBlank { "Guest_${(100..999).random()}" }
+        val success = authRepository.activateKey(
+            key = key,
+            userName = cleanName,
+            tier = tier,
+            loginMethod = "Guest"
+        )
+        if (success) {
+            _validatedKeyInfo.value = null
+            _authErrorMessage.value = null
+            _isAuthenticated.value = true
+            showToast("Welcome Guest Player: $cleanName")
+        } else {
+            _authErrorMessage.value = "Failed to activate key as Guest."
+        }
+    }
+
+    // PIN Setup State (Deprecated - kept for safe legacy compatibility)
     private val _pendingPinSetup = MutableStateFlow<com.example.data.auth.KeyValidationResult.RequirePinSetup?>(null)
     val pendingPinSetup: StateFlow<com.example.data.auth.KeyValidationResult.RequirePinSetup?> = _pendingPinSetup.asStateFlow()
 
@@ -150,87 +306,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun completePinSetup(pin: String) {
         val pending = _pendingPinSetup.value ?: return
-        if (pin.length != 4 || !pin.all { it.isDigit() }) {
-            _authErrorMessage.value = "PIN must be exactly 4 digits (0-9)."
-            return
-        }
-
-        val success = authRepository.activateKeyWithPin(
-            key = pending.key,
-            userName = pending.userName,
-            tier = pending.tier,
-            pin = pin
-        )
-
-        if (success) {
-            _pendingPinSetup.value = null
-            _authErrorMessage.value = null
-            _isAuthenticated.value = true
-            showToast("Key activated with PIN! Welcome ${pending.userName} [${pending.tier}]")
-        } else {
-            _authErrorMessage.value = "Failed to activate PIN. Please try again."
-        }
+        loginAsGuest(pending.key, pending.userName, pending.tier)
     }
 
     fun loginWithPin(identifier: String, pin: String) {
-        if (!networkState.value.isConnected) {
-            _authErrorMessage.value = "Active internet connection is mandatory to log in."
-            return
-        }
-
-        when (val res = authRepository.loginWithPin(identifier, pin)) {
-            is com.example.data.auth.KeyValidationResult.Success -> {
-                _authErrorMessage.value = null
-                _isAuthenticated.value = true
-                showToast(res.message)
-            }
-            is com.example.data.auth.KeyValidationResult.Error -> {
-                _authErrorMessage.value = res.message
-            }
-            else -> {}
-        }
+        submitKey(identifier)
     }
 
-    fun authenticateWithKey(key: String, userName: String) {
-        val trimmedKey = key.trim()
-        val trimmedName = userName.trim()
-
-        if (!networkState.value.isConnected) {
-            _authErrorMessage.value = "Active internet connection is mandatory to authenticate."
-            return
-        }
-
-        if (trimmedName.isBlank()) {
-            _authErrorMessage.value = "Your Name is compulsory! Please enter your name."
-            return
-        }
-
-        // Check if Admin Passcode "111"
-        if (trimmedKey == com.example.data.auth.AuthRepository.ADMIN_PASSCODE) {
-            _authErrorMessage.value = null
-            _isAdminPanelOpen.value = true
-            return
-        }
-
-        // Check Access Key validity
-        when (val result = authRepository.validateKey(trimmedKey, trimmedName)) {
-            is com.example.data.auth.KeyValidationResult.AdminPanel -> {
-                _authErrorMessage.value = null
-                _isAdminPanelOpen.value = true
-            }
-            is com.example.data.auth.KeyValidationResult.RequirePinSetup -> {
-                _authErrorMessage.value = null
-                _pendingPinSetup.value = result
-            }
-            is com.example.data.auth.KeyValidationResult.Success -> {
-                _authErrorMessage.value = null
-                _isAuthenticated.value = true
-                showToast("Welcome to T1 Esports, ${result.userName}!")
-            }
-            is com.example.data.auth.KeyValidationResult.Error -> {
-                _authErrorMessage.value = result.message
-            }
-        }
+    fun authenticateWithKey(key: String, userName: String = "") {
+        submitKey(key)
     }
 
     fun enterAsAdmin() {

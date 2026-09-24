@@ -65,6 +65,9 @@ interface ChatDao {
     @Query("DELETE FROM global_chat_messages")
     suspend fun clearMessages()
 
+    @Query("DELETE FROM global_chat_messages WHERE timestamp <= :timestamp")
+    suspend fun deleteMessagesBefore(timestamp: Long)
+
     @Query("DELETE FROM global_chat_messages WHERE id = :messageId")
     suspend fun deleteMessageById(messageId: String)
 

@@ -2,6 +2,7 @@ package com.example.data.call
 
 import android.content.Context
 import android.util.Log
+import com.google.firebase.firestore.FirebaseFirestore
 import io.agora.rtc2.ChannelMediaOptions
 import io.agora.rtc2.Constants
 import io.agora.rtc2.IRtcEngineEventHandler
@@ -52,6 +53,33 @@ class AgoraVoiceEngine(private val context: Context) {
 
     private var currentMyUid: Int = 0
 
+    init {
+        setupFirestoreConfigListener()
+    }
+
+    private fun setupFirestoreConfigListener() {
+        try {
+            val db = FirebaseFirestore.getInstance()
+            db.collection("app_config").document("agora_settings")
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null || snapshot == null || !snapshot.exists()) return@addSnapshotListener
+                    val cloudAppId = snapshot.getString("appId") ?: ""
+                    val cloudToken = snapshot.getString("token") ?: ""
+                    val cloudChannel = snapshot.getString("channel") ?: DEFAULT_CHANNEL
+                    if (cloudAppId.isNotBlank() && cloudAppId != prefs.getString(KEY_APP_ID, "")) {
+                        Log.i(TAG, "Syncing new Agora App ID from Cloud: $cloudAppId")
+                        prefs.edit()
+                            .putString(KEY_APP_ID, cloudAppId.trim())
+                            .putString(KEY_TOKEN, cloudToken.trim())
+                            .putString(KEY_CHANNEL, cloudChannel.trim())
+                            .apply()
+                        destroyEngine()
+                        initEngine(cloudAppId.trim())
+                    }
+                }
+        } catch (_: Exception) {}
+    }
+
     fun getSavedAppId(): String {
         val saved = prefs.getString(KEY_APP_ID, "") ?: ""
         return if (saved.isNotBlank()) saved else DEFAULT_APP_ID
@@ -67,16 +95,33 @@ class AgoraVoiceEngine(private val context: Context) {
     }
 
     fun saveConfig(appId: String, token: String = "", channel: String = DEFAULT_CHANNEL) {
+        val cleanAppId = appId.trim()
+        val cleanToken = token.trim()
+        val cleanChannel = channel.trim().ifBlank { DEFAULT_CHANNEL }
+
         prefs.edit()
-            .putString(KEY_APP_ID, appId.trim())
-            .putString(KEY_TOKEN, token.trim())
-            .putString(KEY_CHANNEL, channel.trim().ifBlank { DEFAULT_CHANNEL })
+            .putString(KEY_APP_ID, cleanAppId)
+            .putString(KEY_TOKEN, cleanToken)
+            .putString(KEY_CHANNEL, cleanChannel)
             .apply()
+
+        // Sync to Firestore Cloud Config so all devices in squad automatically receive it
+        try {
+            val db = FirebaseFirestore.getInstance()
+            db.collection("app_config").document("agora_settings").set(
+                mapOf(
+                    "appId" to cleanAppId,
+                    "token" to cleanToken,
+                    "channel" to cleanChannel,
+                    "updatedAt" to System.currentTimeMillis()
+                )
+            )
+        } catch (_: Exception) {}
 
         // Reset and re-initialize with new credentials
         destroyEngine()
-        if (appId.isNotBlank()) {
-            initEngine(appId.trim())
+        if (cleanAppId.isNotBlank()) {
+            initEngine(cleanAppId)
         }
     }
 
@@ -90,6 +135,8 @@ class AgoraVoiceEngine(private val context: Context) {
 
         override fun onUserJoined(uid: Int, elapsed: Int) {
             Log.d(TAG, "Teammate joined Agora room: $uid")
+            rtcEngine?.muteRemoteAudioStream(uid, false)
+            rtcEngine?.adjustUserPlaybackSignalVolume(uid, 120)
             _activeRemoteUsers.value = _activeRemoteUsers.value + uid
             _statusMessage.value = "Teammate Connected (UID: $uid)"
         }
@@ -131,13 +178,7 @@ class AgoraVoiceEngine(private val context: Context) {
     }
 
     fun initEngine(appId: String = getSavedAppId()): Boolean {
-        val cleanAppId = appId.trim()
-        if (cleanAppId.isBlank()) {
-            _status.value = AgoraStatus.IDLE
-            _statusMessage.value = "No Agora App ID configured"
-            _isEngineInitialized.value = false
-            return false
-        }
+        val cleanAppId = appId.trim().ifBlank { DEFAULT_APP_ID }
 
         if (rtcEngine != null) {
             _isEngineInitialized.value = true
@@ -150,7 +191,7 @@ class AgoraVoiceEngine(private val context: Context) {
                 mAppId = cleanAppId
                 mEventHandler = rtcEventHandler
                 mChannelProfile = Constants.CHANNEL_PROFILE_COMMUNICATION
-                mAudioScenario = Constants.AUDIO_SCENARIO_GAME_STREAMING
+                mAudioScenario = Constants.AUDIO_SCENARIO_DEFAULT
             }
 
             rtcEngine = RtcEngine.create(config).apply {
@@ -158,8 +199,8 @@ class AgoraVoiceEngine(private val context: Context) {
                 enableLocalAudio(true)
                 muteLocalAudioStream(false)
                 muteAllRemoteAudioStreams(false)
-                adjustRecordingSignalVolume(100)
-                adjustPlaybackSignalVolume(100)
+                adjustRecordingSignalVolume(120)
+                adjustPlaybackSignalVolume(130)
                 setDefaultAudioRoutetoSpeakerphone(true)
                 setEnableSpeakerphone(true)
                 enableAudioVolumeIndication(200, 3, true)
@@ -208,6 +249,8 @@ class AgoraVoiceEngine(private val context: Context) {
             rtcEngine?.enableLocalAudio(true)
             rtcEngine?.muteLocalAudioStream(false)
             rtcEngine?.muteAllRemoteAudioStreams(false)
+            rtcEngine?.adjustRecordingSignalVolume(120)
+            rtcEngine?.adjustPlaybackSignalVolume(130)
             rtcEngine?.setDefaultAudioRoutetoSpeakerphone(true)
             rtcEngine?.setEnableSpeakerphone(true)
 

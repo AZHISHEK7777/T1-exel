@@ -15,8 +15,10 @@ object SquadCallNotificationHelper {
 
     const val CHANNEL_ID_INCOMING = "squad_incoming_call_channel_v2"
     const val CHANNEL_ID_ONGOING = "squad_ongoing_call_channel_v2"
+    const val CHANNEL_ID_CHAT = "squad_chat_messages_channel"
     private const val NOTIFICATION_ID_INCOMING = 9910
     private const val NOTIFICATION_ID_ONGOING = 9911
+    private const val NOTIFICATION_ID_CHAT = 9912
 
     const val ACTION_ACCEPT_CALL = "com.example.ACTION_ACCEPT_CALL"
     const val ACTION_DECLINE_CALL = "com.example.ACTION_DECLINE_CALL"
@@ -57,6 +59,25 @@ object SquadCallNotificationHelper {
                 setShowBadge(false)
             }
             notificationManager.createNotificationChannel(ongoingChannel)
+
+            // 3. Squad Chat Messages Channel (WhatsApp-style notification)
+            val chatNotificationSound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            val chatChannel = NotificationChannel(
+                CHANNEL_ID_CHAT,
+                "Squad Chat Messages",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Notifications for incoming squad messages"
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 250, 150, 250)
+                setSound(chatNotificationSound, AudioAttributes.Builder()
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_COMMUNICATION_INSTANT)
+                    .build())
+                lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
+                setShowBadge(true)
+            }
+            notificationManager.createNotificationChannel(chatChannel)
         }
     }
 
@@ -157,6 +178,37 @@ object SquadCallNotificationHelper {
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "LEAVE CALL", leavePendingIntent)
 
         notificationManager.notify(NOTIFICATION_ID_ONGOING, builder.build())
+    }
+
+    fun showChatMessageNotification(context: Context, senderName: String, messageText: String) {
+        createNotificationChannels(context)
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+        val contentIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra("OPEN_CHAT_SCREEN", true)
+        }
+        val contentPendingIntent = PendingIntent.getActivity(
+            context,
+            301,
+            contentIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID_CHAT)
+            .setSmallIcon(android.R.drawable.sym_action_chat)
+            .setContentTitle(senderName)
+            .setContentText(messageText)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setAutoCancel(true)
+            .setSound(soundUri)
+            .setVibrate(longArrayOf(0, 250, 150, 250))
+            .setContentIntent(contentPendingIntent)
+
+        notificationManager.notify(NOTIFICATION_ID_CHAT, builder.build())
     }
 
     fun cancelIncomingNotification(context: Context) {

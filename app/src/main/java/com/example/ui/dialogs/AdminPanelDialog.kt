@@ -32,9 +32,11 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -56,6 +58,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -73,11 +76,15 @@ import com.example.ui.theme.StatusRed
 import com.example.ui.theme.T1Yellow
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 @Composable
 fun AdminPanelDialog(
     authRepository: AuthRepository,
     adminViewModel: com.example.ui.AdminViewModel? = null,
+    onClearChat: (() -> Unit)? = null,
     onEnterAsAdmin: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -89,6 +96,10 @@ fun AdminPanelDialog(
     var validationResultText by remember { mutableStateOf<String?>(null) }
     var allKeys by remember { mutableStateOf(authRepository.getAllKeys()) }
     var adminNotification by remember { mutableStateOf(authRepository.getLastAdminNotification()) }
+
+    var showClearChatDialog by remember { mutableStateOf(false) }
+    var isClearingChat by remember { mutableStateOf(false) }
+    var clearChatStatusMessage by remember { mutableStateOf<String?>(null) }
 
     // Observe AdminViewModel role validation state if available
     val roleValidationState by (adminViewModel?.roleValidationState ?: kotlinx.coroutines.flow.MutableStateFlow(com.example.ui.RoleValidationState.Idle)).collectAsState()
@@ -173,15 +184,35 @@ fun AdminPanelDialog(
                         }
                     }
 
-                    IconButton(
-                        onClick = onDismiss,
-                        modifier = Modifier.size(32.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Close",
-                            tint = TextSecondary
-                        )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (onEnterAsAdmin != null) {
+                            Button(
+                                onClick = onEnterAsAdmin,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = CyberCyan,
+                                    contentColor = Color.Black
+                                ),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.height(34.dp),
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+                            ) {
+                                Icon(Icons.Default.SportsEsports, contentDescription = null, modifier = Modifier.size(15.dp))
+                                Spacer(modifier = Modifier.width(5.dp))
+                                Text("ENTER APP", fontWeight = FontWeight.Black, fontSize = 11.sp)
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                        }
+
+                        IconButton(
+                            onClick = onDismiss,
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Close",
+                                tint = TextSecondary
+                            )
+                        }
                     }
                 }
 
@@ -193,6 +224,58 @@ fun AdminPanelDialog(
                         .fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
+                    // Quick Action: Enter App as Admin
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(DarkSurfaceElevated)
+                                .border(1.dp, CyberCyan.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
+                                .padding(12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "👑 LOGGED IN AS ADMIN ABHISHEK",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            color = T1Yellow,
+                                            fontWeight = FontWeight.Black,
+                                            fontSize = 11.sp
+                                        )
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = "Access granted via passcode 111. You are inside Admin Panel.",
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            color = TextSecondary,
+                                            fontSize = 11.sp
+                                        )
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                if (onEnterAsAdmin != null) {
+                                    Button(
+                                        onClick = onEnterAsAdmin,
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = CyberCyan,
+                                            contentColor = Color.Black
+                                        ),
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier.height(36.dp)
+                                    ) {
+                                        Icon(Icons.Default.SportsEsports, contentDescription = null, modifier = Modifier.size(15.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("ENTER APP", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                    }
+                                }
+                            }
+                        }
+                    }
                     // Admin Notification for Key Activations
                     if (adminNotification != null) {
                         item {
@@ -263,6 +346,116 @@ fun AdminPanelDialog(
                                 fontWeight = FontWeight.Black,
                                 letterSpacing = 0.5.sp
                             )
+                        }
+                    }
+
+                    // ADMIN SPECIAL ACTION: CLEAR GLOBAL COMMUNITY CHAT
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFF241014))
+                                .border(1.5.dp, StatusRed.copy(alpha = 0.8f), RoundedCornerShape(12.dp))
+                                .padding(14.dp)
+                                .testTag("admin_clear_chat_card")
+                        ) {
+                            Column {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(34.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(StatusRed.copy(alpha = 0.2f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Delete,
+                                            contentDescription = null,
+                                            tint = StatusRed,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column {
+                                        Text(
+                                            text = "COMMUNITY CHAT MANAGEMENT",
+                                            style = MaterialTheme.typography.labelLarge.copy(
+                                                color = StatusRed,
+                                                fontWeight = FontWeight.Black,
+                                                letterSpacing = 0.5.sp
+                                            )
+                                        )
+                                        Text(
+                                            text = "Clear messages across all devices",
+                                            style = MaterialTheme.typography.bodySmall.copy(
+                                                color = TextSecondary,
+                                                fontSize = 11.sp
+                                            )
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(8.dp))
+
+                                Text(
+                                    text = "Yahan se aap squad/global chat ke saare messages aur photos ek click me wipe kar sakte hain.",
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        color = TextSecondary,
+                                        fontSize = 11.sp
+                                    )
+                                )
+
+                                clearChatStatusMessage?.let { status ->
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        text = status,
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            color = if (status.startsWith("✅")) StatusGreen else StatusRed,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 11.sp
+                                        )
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.height(10.dp))
+
+                                Button(
+                                    onClick = { showClearChatDialog = true },
+                                    enabled = !isClearingChat,
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = StatusRed,
+                                        contentColor = Color.White
+                                    ),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(42.dp)
+                                        .testTag("admin_clear_chat_button")
+                                ) {
+                                    if (isClearingChat) {
+                                        CircularProgressIndicator(
+                                            color = Color.White,
+                                            modifier = Modifier.size(16.dp),
+                                            strokeWidth = 2.dp
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("CLEARING CHAT...", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                    } else {
+                                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "CLEAR ALL CHAT (SQUAD & GLOBAL)",
+                                            fontWeight = FontWeight.Black,
+                                            fontSize = 11.sp,
+                                            letterSpacing = 0.5.sp
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -640,7 +833,7 @@ fun AdminPanelDialog(
                                     }
                                     if (itemKey.isUsed && itemKey.usedBy.isNotBlank()) {
                                         Text(
-                                            text = "👤 Activated: ${itemKey.usedBy} • PIN: ${if (itemKey.pin.isNotEmpty()) "••••" else "None"}",
+                                            text = "👤 Activated by: ${itemKey.usedBy} • Method: ${if (itemKey.pin.isNotBlank()) itemKey.pin else "Verified"}",
                                             style = MaterialTheme.typography.labelSmall.copy(color = CyberCyan, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                                         )
                                     }
@@ -676,6 +869,121 @@ fun AdminPanelDialog(
 
                     item {
                         AbhishekSignature(modifier = Modifier.fillMaxWidth())
+                    }
+                }
+            }
+        }
+    }
+
+    if (showClearChatDialog) {
+        Dialog(
+            onDismissRequest = { showClearChatDialog = false }
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(0.92f)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(CyberBlack)
+                    .border(2.dp, StatusRed, RoundedCornerShape(16.dp))
+                    .padding(20.dp)
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Box(
+                        modifier = Modifier
+                            .size(52.dp)
+                            .clip(CircleShape)
+                            .background(StatusRed.copy(alpha = 0.15f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Default.Delete,
+                            contentDescription = null,
+                            tint = StatusRed,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Text(
+                        text = "CLEAR ALL CHAT MESSAGES?",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            color = StatusRed,
+                            fontWeight = FontWeight.Black,
+                            letterSpacing = 0.5.sp
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = "Kya aap sach me poori community chat clear karna chahte hain?\n\nSabhi players ki messages aur photos hamesha ke liye delete ho jayengi. Ye action reverse nahi ho sakta.",
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            color = TextSecondary,
+                            textAlign = TextAlign.Center,
+                            fontSize = 12.sp,
+                            lineHeight = 16.sp
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Button(
+                            onClick = { showClearChatDialog = false },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = DarkSurfaceElevated,
+                                contentColor = TextPrimary
+                            ),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(44.dp)
+                        ) {
+                            Text("CANCEL", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
+
+                        Button(
+                            onClick = {
+                                showClearChatDialog = false
+                                isClearingChat = true
+                                clearChatStatusMessage = "⏳ Clearing chat..."
+                                if (onClearChat != null) {
+                                    onClearChat()
+                                    isClearingChat = false
+                                    clearChatStatusMessage = "✅ All community chat messages cleared successfully!"
+                                    Toast.makeText(context, "Chat cleared successfully!", Toast.LENGTH_SHORT).show()
+                                } else if (adminViewModel != null) {
+                                    adminViewModel.clearGlobalChat { success ->
+                                        isClearingChat = false
+                                        clearChatStatusMessage = if (success) "✅ All community chat messages cleared successfully!" else "⚠️ Chat cleared locally."
+                                        Toast.makeText(context, "Chat cleared successfully!", Toast.LENGTH_SHORT).show()
+                                    }
+                                } else {
+                                    val repo = com.example.data.chat.GlobalChatRepository(context)
+                                    CoroutineScope(Dispatchers.Main).launch {
+                                        val success = repo.clearAllChat()
+                                        isClearingChat = false
+                                        clearChatStatusMessage = if (success) "✅ All community chat messages cleared successfully!" else "⚠️ Chat cleared locally."
+                                        Toast.makeText(context, "Chat cleared successfully!", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = StatusRed,
+                                contentColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(44.dp)
+                                .testTag("confirm_clear_chat_button")
+                        ) {
+                            Text("YES, CLEAR CHAT", fontWeight = FontWeight.Black, fontSize = 12.sp)
+                        }
                     }
                 }
             }

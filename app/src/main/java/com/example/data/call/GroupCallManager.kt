@@ -3,6 +3,9 @@ package com.example.data.call
 import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
+import android.media.Ringtone
+import android.media.RingtoneManager
+import android.media.ToneGenerator
 import android.net.Uri
 import android.os.Build
 import android.os.VibrationEffect
@@ -66,6 +69,8 @@ class GroupCallManager(private val context: Context) {
 
     private var myUserName: String = ""
     private var lastDismissedCallTime: Long = 0L
+    private var incomingRingtone: Ringtone? = null
+    private var outgoingToneGenerator: ToneGenerator? = null
 
     init {
         setupFirestoreListener()
@@ -136,6 +141,8 @@ class GroupCallManager(private val context: Context) {
             "RINGING", "ACTIVE" -> {
                 val isInCall = room.participants.contains(myUserName)
                 if (isInCall) {
+                    stopIncomingRing()
+                    stopOutgoingRingback()
                     _localStatus.value = LocalCallStatus.CONNECTED
                     SquadCallNotificationHelper.cancelIncomingNotification(context)
                     SquadCallNotificationHelper.showOngoingCallNotification(context, room.participants.size)
@@ -144,11 +151,14 @@ class GroupCallManager(private val context: Context) {
                     if (room.callerName.isNotBlank() && room.callerName != myUserName) {
                         _localStatus.value = LocalCallStatus.INCOMING
                         triggerRingVibration()
+                        startIncomingRing()
                         SquadCallNotificationHelper.showIncomingCallNotification(context, room.callerName)
                     }
                 }
             }
             "ENDED", "IDLE" -> {
+                stopIncomingRing()
+                stopOutgoingRingback()
                 if (_localStatus.value != LocalCallStatus.IDLE) {
                     _localStatus.value = LocalCallStatus.IDLE
                 }
@@ -162,6 +172,9 @@ class GroupCallManager(private val context: Context) {
         _localStatus.value = LocalCallStatus.CONNECTED
         _isMicMuted.value = false
         enableSpeaker(true)
+
+        // WhatsApp-like outgoing ringback tone
+        startOutgoingRingback()
 
         val targetChannel = agoraEngine.getSavedChannel()
 
@@ -199,6 +212,8 @@ class GroupCallManager(private val context: Context) {
 
     fun joinCall(userName: String) {
         myUserName = userName
+        stopIncomingRing()
+        stopOutgoingRingback()
         _localStatus.value = LocalCallStatus.CONNECTED
         enableSpeaker(true)
 
@@ -230,11 +245,15 @@ class GroupCallManager(private val context: Context) {
 
     fun declineIncomingCall() {
         lastDismissedCallTime = System.currentTimeMillis()
+        stopIncomingRing()
+        stopOutgoingRingback()
         _localStatus.value = LocalCallStatus.IDLE
         SquadCallNotificationHelper.cancelIncomingNotification(context)
     }
 
     fun leaveCall() {
+        stopIncomingRing()
+        stopOutgoingRingback()
         val currentParticipants = _currentRoom.value?.participants?.filter { it != myUserName } ?: emptyList()
         _localStatus.value = LocalCallStatus.IDLE
         SquadCallNotificationHelper.cancelAll(context)
@@ -278,6 +297,48 @@ class GroupCallManager(private val context: Context) {
         } catch (e: Exception) {
             Log.e("GroupCallManager", "Audio routing error: ${e.message}")
         }
+    }
+
+    private fun startIncomingRing() {
+        try {
+            stopIncomingRing()
+            val alertUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            incomingRingtone = RingtoneManager.getRingtone(context, alertUri)
+            incomingRingtone?.play()
+        } catch (e: Exception) {
+            Log.e("GroupCallManager", "Cannot play incoming ringtone: ${e.message}")
+        }
+    }
+
+    private fun stopIncomingRing() {
+        try {
+            incomingRingtone?.stop()
+            incomingRingtone = null
+        } catch (_: Exception) {}
+    }
+
+    private fun startOutgoingRingback() {
+        try {
+            stopOutgoingRingback()
+            outgoingToneGenerator = ToneGenerator(AudioManager.STREAM_VOICE_CALL, 70)
+            outgoingToneGenerator?.startTone(ToneGenerator.TONE_SUP_RINGTONE, 3000)
+            // Auto stop ringback tone after 3 seconds as call connects
+            scope.launch {
+                kotlinx.coroutines.delay(3000)
+                stopOutgoingRingback()
+            }
+        } catch (e: Exception) {
+            Log.e("GroupCallManager", "Cannot start ringback tone: ${e.message}")
+        }
+    }
+
+    private fun stopOutgoingRingback() {
+        try {
+            outgoingToneGenerator?.stopTone()
+            outgoingToneGenerator?.release()
+            outgoingToneGenerator = null
+        } catch (_: Exception) {}
     }
 
     private fun triggerRingVibration() {

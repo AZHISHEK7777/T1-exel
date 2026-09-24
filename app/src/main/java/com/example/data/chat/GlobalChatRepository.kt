@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 class GlobalChatRepository(private val context: Context) {
@@ -25,6 +26,10 @@ class GlobalChatRepository(private val context: Context) {
     private val prefs = context.getSharedPreferences("t1_chat_prefs", Context.MODE_PRIVATE)
     val deviceId: String = prefs.getString("device_id", null) ?: UUID.randomUUID().toString().also {
         prefs.edit().putString("device_id", it).apply()
+    }
+
+    companion object {
+        private const val KEY_LAST_CLEARED_TIMESTAMP = "last_cleared_timestamp"
     }
 
     private val _incomingNotification = MutableSharedFlow<ChatMessageEntity>(extraBufferCapacity = 10)
@@ -102,6 +107,22 @@ class GlobalChatRepository(private val context: Context) {
                 return
             }
 
+            // 1. Listen for Global Admin Wipe / Clear Signals across all devices
+            fs.collection("app_config").document("chat_controls")
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null || snapshot == null || !snapshot.exists()) return@addSnapshotListener
+                    val cloudClearedAt = snapshot.getLong("lastClearedAt") ?: 0L
+                    val localClearedAt = prefs.getLong(KEY_LAST_CLEARED_TIMESTAMP, 0L)
+                    if (cloudClearedAt > localClearedAt) {
+                        prefs.edit().putLong(KEY_LAST_CLEARED_TIMESTAMP, cloudClearedAt).apply()
+                        scope.launch {
+                            chatDao.deleteMessagesBefore(cloudClearedAt)
+                            Log.i("GlobalChatRepository", "Global Wipe executed: Deleted messages before $cloudClearedAt")
+                        }
+                    }
+                }
+
+            // 2. Realtime listener for message stream
             fs.collection("global_chat")
                 .orderBy("timestamp", Query.Direction.ASCENDING)
                 .limitToLast(150)
@@ -116,6 +137,12 @@ class GlobalChatRepository(private val context: Context) {
                             for (doc in snapshots.documentChanges) {
                                 val d = doc.document
                                 val docId = d.getString("id") ?: d.id
+
+                                if (doc.type == DocumentChange.Type.REMOVED) {
+                                    chatDao.deleteMessageById(docId)
+                                    continue
+                                }
+
                                 val senderName = d.getString("senderName") ?: "Player"
                                 // Ignore any leftover fake messages
                                 if (senderName in listOf("Abhishek (Developer)", "Rahul_Pro", "Viper_ES")) {
@@ -162,6 +189,48 @@ class GlobalChatRepository(private val context: Context) {
                 }
         } catch (e: Exception) {
             Log.e("GlobalChatRepository", "Error setting up Firestore: ${e.message}", e)
+        }
+    }
+
+    suspend fun clearAllChat(): Boolean = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        prefs.edit().putLong(KEY_LAST_CLEARED_TIMESTAMP, now).apply()
+
+        try {
+            // 1. Instantly clear local Room database on Admin's device
+            chatDao.clearMessages()
+
+            // 2. Broadcast Global Wipe Command to Firebase Firestore
+            val fs = getFirestoreInstance()
+            if (fs != null) {
+                // Signal ALL devices globally to purge their local room databases
+                fs.collection("app_config").document("chat_controls").set(
+                    mapOf(
+                        "lastClearedAt" to now,
+                        "clearedBy" to "ADMIN",
+                        "wipeVersion" to UUID.randomUUID().toString()
+                    )
+                )
+
+                // 3. Batch delete all documents from Firestore global_chat collection
+                fs.collection("global_chat").get().addOnSuccessListener { snapshot ->
+                    if (snapshot != null && !snapshot.isEmpty) {
+                        val batch = fs.batch()
+                        for (doc in snapshot.documents) {
+                            batch.delete(doc.reference)
+                        }
+                        batch.commit().addOnFailureListener { e ->
+                            Log.w("GlobalChatRepository", "Batch delete commit error: ${e.message}")
+                        }
+                    }
+                }.addOnFailureListener { e ->
+                    Log.w("GlobalChatRepository", "Could not fetch global_chat to clear: ${e.message}")
+                }
+            }
+            true
+        } catch (e: Exception) {
+            Log.e("GlobalChatRepository", "Failed to clear chat: ${e.message}", e)
+            false
         }
     }
 

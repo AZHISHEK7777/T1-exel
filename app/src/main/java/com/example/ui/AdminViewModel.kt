@@ -335,6 +335,16 @@ class AdminViewModel(
         }
     }
 
+    private val globalChatRepository = com.example.data.chat.GlobalChatRepository(application.applicationContext)
+
+    fun clearGlobalChat(onResult: ((Boolean) -> Unit)? = null) {
+        viewModelScope.launch {
+            val success = globalChatRepository.clearAllChat()
+            _statusMessage.value = if (success) "🧹 All community chat messages cleared!" else "⚠️ Chat cleared locally."
+            onResult?.invoke(success)
+        }
+    }
+
     fun deleteKey(key: String) {
         authRepository.deleteKey(key)
         _keysList.value = _keysList.value.filterNot { it.value.equals(key, ignoreCase = true) }

@@ -33,11 +33,22 @@ data class AccessKeyRecord(
     val pin: String = "" // 4-digit PIN set by the user upon first activation
 )
 
+data class RegisteredGoogleUser(
+    val email: String,
+    val username: String,
+    val key: String,
+    val tier: KeyTier = KeyTier.BASIC,
+    val registeredAt: String = ""
+)
+
 sealed interface KeyValidationResult {
-    data object AdminPanel : KeyValidationResult
-    data class RequirePinSetup(val key: String, val userName: String, val tier: KeyTier) : KeyValidationResult
+    data object AdminInstantLogin : KeyValidationResult
+    data class KeyVerified(val key: String, val tier: KeyTier, val label: String) : KeyValidationResult
     data class Success(val key: String, val userName: String, val tier: KeyTier, val message: String) : KeyValidationResult
     data class Error(val message: String) : KeyValidationResult
+    // Legacy compatibility
+    data object AdminPanel : KeyValidationResult
+    data class RequirePinSetup(val key: String, val userName: String, val tier: KeyTier) : KeyValidationResult
 }
 
 class AuthRepository(private val context: Context) {
@@ -55,6 +66,7 @@ class AuthRepository(private val context: Context) {
         private const val PREF_USER_PIN = "pref_user_pin"
         private const val PREF_STORED_KEYS = "pref_stored_keys_json"
         private const val PREF_LAST_ADMIN_NOTIFICATION = "pref_last_admin_notification"
+        private const val PREF_REGISTERED_GOOGLE_USERS = "pref_registered_google_users_json"
     }
 
     private var isFirebaseAvailable: Boolean? = null
@@ -115,6 +127,138 @@ class AuthRepository(private val context: Context) {
             // Listen for Firestore keys updates
             setupFirestoreKeysListener()
         }
+        setupFirestoreGoogleUsersListener()
+    }
+
+    private fun setupFirestoreGoogleUsersListener() {
+        try {
+            getFirestore()?.collection("google_users")
+                ?.addSnapshotListener { snapshot, error ->
+                    if (error != null || snapshot == null) return@addSnapshotListener
+                    val cloudUsers = snapshot.documents.mapNotNull { doc ->
+                        try {
+                            val email = doc.getString("email") ?: return@mapNotNull null
+                            val username = doc.getString("username") ?: "Google Player"
+                            val key = doc.getString("key") ?: ""
+                            val tierStr = doc.getString("tier") ?: "BASIC"
+                            val tier = try { KeyTier.valueOf(tierStr) } catch (_: Exception) { KeyTier.BASIC }
+                            val registeredAt = doc.getString("registeredAt") ?: ""
+                            RegisteredGoogleUser(email, username, key, tier, registeredAt)
+                        } catch (_: Exception) { null }
+                    }
+                    if (cloudUsers.isNotEmpty()) {
+                        val current = getAllRegisteredGoogleUsers().toMutableList()
+                        for (cu in cloudUsers) {
+                            val idx = current.indexOfFirst { it.email.equals(cu.email, ignoreCase = true) }
+                            if (idx >= 0) {
+                                current[idx] = cu
+                            } else {
+                                current.add(cu)
+                            }
+                        }
+                        saveRegisteredGoogleUsers(current)
+                    }
+                }
+        } catch (e: Exception) {
+            Log.e("AuthRepository", "Failed to setup google users listener: ${e.message}")
+        }
+    }
+
+    fun getRegisteredGoogleUser(email: String): RegisteredGoogleUser? {
+        val cleanEmail = email.trim().lowercase(Locale.ROOT)
+        if (cleanEmail.isBlank()) return null
+        return getAllRegisteredGoogleUsers().find { it.email.trim().lowercase(Locale.ROOT) == cleanEmail }
+    }
+
+    fun getAllRegisteredGoogleUsers(): List<RegisteredGoogleUser> {
+        val rawJson = prefs.getString(PREF_REGISTERED_GOOGLE_USERS, null) ?: return emptyList()
+        val list = mutableListOf<RegisteredGoogleUser>()
+        try {
+            val array = JSONArray(rawJson)
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                val tierStr = obj.optString("tier", KeyTier.BASIC.name)
+                val tier = try { KeyTier.valueOf(tierStr) } catch (_: Exception) { KeyTier.BASIC }
+                list.add(
+                    RegisteredGoogleUser(
+                        email = obj.optString("email"),
+                        username = obj.optString("username"),
+                        key = obj.optString("key"),
+                        tier = tier,
+                        registeredAt = obj.optString("registeredAt")
+                    )
+                )
+            }
+        } catch (_: Exception) {}
+        return list
+    }
+
+    fun saveRegisteredGoogleUsers(list: List<RegisteredGoogleUser>) {
+        val array = JSONArray()
+        for (u in list) {
+            val obj = JSONObject().apply {
+                put("email", u.email)
+                put("username", u.username)
+                put("key", u.key)
+                put("tier", u.tier.name)
+                put("registeredAt", u.registeredAt)
+            }
+            array.put(obj)
+        }
+        prefs.edit().putString(PREF_REGISTERED_GOOGLE_USERS, array.toString()).apply()
+    }
+
+    fun registerGoogleUser(
+        email: String,
+        username: String,
+        key: String,
+        tier: KeyTier
+    ): RegisteredGoogleUser {
+        val cleanEmail = email.trim().lowercase(Locale.ROOT)
+        val cleanName = username.trim().ifBlank { cleanEmail.substringBefore("@") }
+        val timestamp = SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault()).format(Date())
+
+        val record = RegisteredGoogleUser(
+            email = cleanEmail,
+            username = cleanName,
+            key = key,
+            tier = tier,
+            registeredAt = timestamp
+        )
+
+        val currentList = getAllRegisteredGoogleUsers().toMutableList()
+        currentList.removeAll { it.email.equals(cleanEmail, ignoreCase = true) }
+        currentList.add(0, record)
+        saveRegisteredGoogleUsers(currentList)
+
+        // Activate the key and mark session as logged in
+        activateKey(key, cleanName, tier, "Google ($cleanEmail)")
+
+        // Sync registration to Firestore 'google_users'
+        scope.launch {
+            try {
+                val fs = getFirestore() ?: return@launch
+                val map = hashMapOf(
+                    "email" to cleanEmail,
+                    "username" to cleanName,
+                    "key" to key,
+                    "tier" to tier.name,
+                    "registeredAt" to timestamp
+                )
+                fs.collection("google_users").document(cleanEmail).set(map)
+            } catch (e: Exception) {
+                Log.e("AuthRepository", "Failed to save google user: ${e.message}")
+            }
+        }
+
+        return record
+    }
+
+    fun loginRegisteredGoogleUser(email: String): RegisteredGoogleUser? {
+        val cleanEmail = email.trim().lowercase(Locale.ROOT)
+        val user = getRegisteredGoogleUser(cleanEmail) ?: return null
+        setLoggedIn(user.key, user.username, user.tier, "Google ($cleanEmail)")
+        return user
     }
 
     private fun setupFirestoreKeysListener() {
@@ -212,7 +356,130 @@ class AuthRepository(private val context: Context) {
     }
 
     /**
-     * Validate Key with Single-Use policy:
+     * Step 1: Validate Key Only
+     * - If Admin Passcode ("111") or Master Key ("ABHISHEK-ADMIN-999") or ADMIN tier:
+     *   -> AdminInstantLogin (No username or Google login needed!)
+     * - If key not found / revoked / already used -> Error
+     * - If valid & unused -> KeyVerified (Proceed to Google login or Guest login)
+     */
+     fun validateKeyOnly(rawInput: String): KeyValidationResult {
+         val cleanKey = rawInput.trim()
+
+         if (cleanKey.isBlank()) {
+             return KeyValidationResult.Error("Please enter an Access Key.")
+         }
+
+         // Immediate Admin Passcode "111" or Master Key
+         if (cleanKey == ADMIN_PASSCODE || cleanKey.equals(MASTER_KEY, ignoreCase = true)) {
+             return KeyValidationResult.AdminInstantLogin
+         }
+
+         val allKeys = getAllKeys()
+         val found = allKeys.find { it.key.equals(cleanKey, ignoreCase = true) }
+
+         if (found != null) {
+             if (found.tier == KeyTier.ADMIN) {
+                 return KeyValidationResult.AdminInstantLogin
+             }
+
+             if (found.isRevoked) {
+                 return KeyValidationResult.Error("This key has been REVOKED by Admin Abhishek.")
+             }
+
+             if (found.isUsed) {
+                 return KeyValidationResult.Error(
+                     "This key was already activated by '${found.usedBy}'! Each key can only be used once."
+                 )
+             }
+
+             return KeyValidationResult.KeyVerified(
+                 key = found.key,
+                 tier = found.tier,
+                 label = found.label
+             )
+         }
+
+         return KeyValidationResult.Error("Invalid Access Key! Please check your key or contact Administrator Abhishek.")
+     }
+
+    /**
+     * Activate Key with either Google Login or Guest Login.
+     * Permanently marks key as used and logs in.
+     */
+    fun activateKey(
+        key: String,
+        userName: String,
+        tier: KeyTier,
+        loginMethod: String = "Google"
+    ): Boolean {
+        val cleanName = userName.trim().ifBlank { if (loginMethod == "Guest") "Guest Player" else "Pro Player" }
+        val timestamp = SimpleDateFormat("dd MMM, HH:mm", Locale.getDefault()).format(Date())
+        val allKeys = getAllKeys()
+        val updated = allKeys.map {
+            if (it.key.equals(key, ignoreCase = true)) {
+                it.copy(
+                    isUsed = true,
+                    usedBy = cleanName,
+                    usedAt = timestamp,
+                    pin = loginMethod
+                )
+            } else {
+                it
+            }
+        }
+        saveKeysToPrefs(updated)
+
+        // Save session locally
+        setLoggedIn(key, cleanName, tier, loginMethod)
+
+        // Sync to Firebase Firestore
+        scope.launch {
+            try {
+                val fs = getFirestore() ?: return@launch
+                val keyData = hashMapOf(
+                    "key" to key,
+                    "label" to cleanName,
+                    "tier" to tier.name,
+                    "isUsed" to true,
+                    "isRevoked" to false,
+                    "createdAt" to timestamp,
+                    "usedBy" to cleanName,
+                    "usedAt" to timestamp,
+                    "loginMethod" to loginMethod
+                )
+                fs.collection("access_keys").document(key).set(keyData)
+
+                val keysCollectionData = hashMapOf(
+                    "value" to key,
+                    "type" to tier.name.lowercase(Locale.ROOT),
+                    "isUsed" to true,
+                    "usedBy" to cleanName,
+                    "loginMethod" to loginMethod
+                )
+                fs.collection("keys").document(key).set(keysCollectionData)
+
+                val alert = hashMapOf(
+                    "key" to key,
+                    "tier" to tier.name,
+                    "userName" to cleanName,
+                    "loginMethod" to loginMethod,
+                    "timestamp" to timestamp,
+                    "timeMillis" to System.currentTimeMillis()
+                )
+                fs.collection("admin_alerts").add(alert)
+            } catch (e: Exception) {
+                Log.e("AuthRepository", "Failed to sync key activation: ${e.message}")
+            }
+        }
+
+        val notification = "🔔 NEW: [$tier] Key '$key' activated by '$cleanName' ($loginMethod)"
+        prefs.edit().putString(PREF_LAST_ADMIN_NOTIFICATION, notification).apply()
+
+        return true
+    }
+
+    /**
+     * Validate Key with Single-Use policy (legacy):
      * - If key not found -> Error
      * - If key revoked -> Error
      * - If key already used -> Error: Key already activated once! Use 4-digit PIN login.

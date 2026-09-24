@@ -15,6 +15,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
@@ -24,6 +25,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -42,9 +44,11 @@ import com.example.ui.dialogs.BackendConfigDialog
 import com.example.ui.dialogs.CallPermissionsDialog
 import com.example.ui.dialogs.GroupCallRoomDialog
 import com.example.ui.dialogs.IncomingCallNotificationBanner
+import com.example.ui.dialogs.WhatsAppMinimizedCallBanner
 import com.example.ui.dialogs.LauncherDialog
 import com.example.ui.dialogs.OverlayPermissionDialog
 import com.example.ui.dialogs.SettingsDialog
+import kotlinx.coroutines.delay
 import com.example.ui.screens.CharacterSkillsScreen
 import com.example.ui.screens.GlobalChatScreen
 import com.example.ui.screens.KeyAuthScreen
@@ -55,18 +59,39 @@ import com.example.ui.theme.MyApplicationTheme
 
 class MainActivity : ComponentActivity() {
     private var pendingNotificationAction: String? = null
+    private var pendingOpenChat: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         SquadCallNotificationHelper.createNotificationChannels(this)
         pendingNotificationAction = intent?.action
+        pendingOpenChat = intent?.getBooleanExtra("OPEN_CHAT_SCREEN", false) ?: false
+
+        // Initialize Firebase Cloud Messaging token for background notifications
+        try {
+            com.google.firebase.messaging.FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
+                if (task.isSuccessful) {
+                    val token = task.result
+                    if (!token.isNullOrBlank()) {
+                        com.example.data.notifications.T1FirebaseMessagingService.saveFcmTokenLocally(this, token)
+                        val prefs = getSharedPreferences("t1_auth_prefs", android.content.Context.MODE_PRIVATE)
+                        val userName = prefs.getString("pref_user_name", "") ?: ""
+                        com.example.data.notifications.T1FirebaseMessagingService.uploadTokenToFirestore(this, token, userName)
+                    }
+                }
+            }
+        } catch (_: Exception) {}
 
         setContent {
             MyApplicationTheme {
                 T1EsportsApp(
                     initialAction = pendingNotificationAction,
-                    onClearAction = { pendingNotificationAction = null }
+                    initialOpenChat = pendingOpenChat,
+                    onClearAction = {
+                        pendingNotificationAction = null
+                        pendingOpenChat = false
+                    }
                 )
             }
         }
@@ -78,6 +103,9 @@ class MainActivity : ComponentActivity() {
         intent.action?.let { action ->
             pendingNotificationAction = action
         }
+        if (intent.getBooleanExtra("OPEN_CHAT_SCREEN", false)) {
+            pendingOpenChat = true
+        }
     }
 }
 
@@ -85,6 +113,7 @@ class MainActivity : ComponentActivity() {
 fun T1EsportsApp(
     viewModel: MainViewModel = viewModel(),
     initialAction: String? = null,
+    initialOpenChat: Boolean = false,
     onClearAction: () -> Unit = {}
 ) {
     val isAuthenticated by viewModel.isAuthenticated.collectAsState()
@@ -126,6 +155,14 @@ fun T1EsportsApp(
     var showOverlayPermissionDialog by remember { mutableStateOf(false) }
     var showPermissionsDialog by remember { mutableStateOf(false) }
     var isSideCpuMonitorOpen by remember { mutableStateOf(false) }
+    var isCallMinimized by remember { mutableStateOf(false) }
+
+    // Reset minimized state when call ends
+    LaunchedEffect(callStatus) {
+        if (callStatus != LocalCallStatus.CONNECTED) {
+            isCallMinimized = false
+        }
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -160,7 +197,11 @@ fun T1EsportsApp(
     }
 
     // Handle initial / incoming notification action
-    LaunchedEffect(initialAction) {
+    LaunchedEffect(initialAction, initialOpenChat) {
+        if (initialOpenChat) {
+            viewModel.setTab(3) // Switch to Global Chat tab
+            onClearAction()
+        }
         when (initialAction) {
             SquadCallNotificationHelper.ACTION_ACCEPT_CALL -> {
                 viewModel.joinGroupCall()
@@ -215,6 +256,7 @@ fun T1EsportsApp(
         AdminPanelDialog(
             authRepository = viewModel.authRepository,
             adminViewModel = viewModel.adminViewModel,
+            onClearChat = { viewModel.clearAllChat() },
             onEnterAsAdmin = { viewModel.enterAsAdmin() },
             onDismiss = { viewModel.closeAdminPanel() }
         )
@@ -323,8 +365,8 @@ fun T1EsportsApp(
         )
     }
 
-    // Active Group Call Room Screen / Dialog
-    if (callStatus == LocalCallStatus.CONNECTED) {
+    // Active WhatsApp Group Call Room Screen / Dialog
+    if (callStatus == LocalCallStatus.CONNECTED && !isCallMinimized) {
         GroupCallRoomDialog(
             room = callRoom,
             currentUserName = viewModel.getUserName(),
@@ -332,9 +374,13 @@ fun T1EsportsApp(
             isSpeakerOn = isCallSpeakerOn,
             onToggleMic = { viewModel.toggleCallMic() },
             onToggleSpeaker = { viewModel.toggleCallSpeaker() },
-            onLeaveCall = { viewModel.leaveGroupCall() },
+            onLeaveCall = { 
+                isCallMinimized = false
+                viewModel.leaveGroupCall() 
+            },
             onDialPhone = { number -> viewModel.dialPhoneNumber(number) },
-            onDismiss = { viewModel.leaveGroupCall() },
+            onDismiss = { isCallMinimized = true },
+            onMinimize = { isCallMinimized = true },
             agoraStatus = agoraStatus,
             agoraStatusMessage = agoraStatusMessage,
             savedAgoraAppId = viewModel.getAgoraAppId(),
@@ -346,7 +392,7 @@ fun T1EsportsApp(
         )
     }
 
-    // Floating Incoming Group Call Banner (Instagram style)
+    // Floating Incoming Group Call Banner (WhatsApp style)
     if (callStatus == LocalCallStatus.INCOMING) {
         IncomingCallNotificationBanner(
             callerName = callRoom?.callerName ?: "Squad Mate",
@@ -355,25 +401,31 @@ fun T1EsportsApp(
         )
     }
 
-    val pendingPinSetup by viewModel.pendingPinSetup.collectAsState()
+    val validatedKeyInfo by viewModel.validatedKeyInfo.collectAsState()
 
     // 1. If not authenticated, display Key Authentication Screen (Opening / Splash)
     if (!isAuthenticated) {
         KeyAuthScreen(
             networkState = networkState,
             errorMessage = authErrorMessage,
-            pendingPinSetup = pendingPinSetup,
-            onKeySubmitted = { key, userName ->
-                viewModel.authenticateWithKey(key, userName)
+            validatedKeyInfo = validatedKeyInfo,
+            onSubmitKey = { key ->
+                viewModel.submitKey(key)
             },
-            onPinLoginSubmitted = { identifier, pin ->
-                viewModel.loginWithPin(identifier, pin)
+            onDirectGoogleLogin = { email ->
+                viewModel.directGoogleLogin(email)
             },
-            onCompletePinSetup = { pin ->
-                viewModel.completePinSetup(pin)
+            onRegisterWithGoogle = { email, username, key, tier ->
+                viewModel.registerWithGoogle(email, username, key, tier)
             },
-            onCancelPinSetup = {
-                viewModel.clearPendingPinSetup()
+            onLoginWithGoogle = { key, userName, tier ->
+                viewModel.loginWithGoogle(key, userName, tier)
+            },
+            onLoginAsGuest = { key, guestName, tier ->
+                viewModel.loginAsGuest(key, guestName, tier)
+            },
+            onClearKey = {
+                viewModel.clearValidatedKeyInfo()
             }
         )
         return
@@ -385,11 +437,33 @@ fun T1EsportsApp(
             .fillMaxSize()
             .background(CyberBlack),
         topBar = {
-            T1TopBar(
-                networkState = networkState,
-                onLaunchGameClick = handleLaunchGameTrigger,
-                onSettingsClick = { showSettingsDialog = true }
-            )
+            Column {
+                if (callStatus == LocalCallStatus.CONNECTED && isCallMinimized) {
+                    val callDurationSeconds = remember { mutableIntStateOf(0) }
+                    LaunchedEffect(Unit) {
+                        while (true) {
+                            delay(1000)
+                            callDurationSeconds.intValue++
+                        }
+                    }
+                    val minutes = callDurationSeconds.intValue / 60
+                    val seconds = callDurationSeconds.intValue % 60
+                    val durationText = String.format("%02d:%02d", minutes, seconds)
+                    WhatsAppMinimizedCallBanner(
+                        durationText = durationText,
+                        onExpand = { isCallMinimized = false },
+                        onEndCall = {
+                            isCallMinimized = false
+                            viewModel.leaveGroupCall()
+                        }
+                    )
+                }
+                T1TopBar(
+                    networkState = networkState,
+                    onLaunchGameClick = handleLaunchGameTrigger,
+                    onSettingsClick = { showSettingsDialog = true }
+                )
+            }
         },
         bottomBar = {
             T1BottomNav(
